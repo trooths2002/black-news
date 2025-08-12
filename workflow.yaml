@@ -1,0 +1,186 @@
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project: "carbon-broker-466711-d0"
+          - region: "us-central1"
+          - environment_name: ${args.env}
+          - topic: ${string(args.topic)}
+          - gcs_bucket: ${project + "-media"}
+          - run_id: ${sys.get_uuid()}
+          - scriptwriter_url: ${args.scriptwriter_url}
+          - media_sourcing_url: ${args.media_sourcing_url}
+          - narrator_url: ${args.narrator_url}
+          - video_assembly_url: ${args.video_assembly_url}
+          - uploader_url: ${args.uploader_url}
+          - error_handler_url: ${args.error_handler_url}
+          - logger_url: ${args.logger_url}
+
+    - log_workflow_start:
+        call: sys.log
+        args:
+          text: '${"Workflow started for topic: " + topic + " with run ID: " + run_id}'
+          severity: "INFO"
+
+    - call_scriptwriter:
+        try:
+          call: http.post
+          args:
+            url: ${scriptwriter_url}
+            auth:
+              type: OIDC
+            body:
+              topic: ${topic}
+              bucket: ${gcs_bucket}
+              run_id: ${run_id}
+          result: scriptwriter_result
+        except:
+          as: e
+          steps:
+            - log_error:
+                call: sys.log
+                args:
+                  text: '${"Scriptwriter failed: " + json.encode(e)}'
+                  severity: "ERROR"
+            - fail_step:
+                raise: ${e}
+
+    - log_scriptwriter_response:
+        call: sys.log
+        args:
+          text: '${"Scriptwriter response: " + json.encode(scriptwriter_result)}'
+          severity: "INFO"
+
+    - call_media_sourcing:
+        try:
+          call: http.post
+          args:
+            url: ${media_sourcing_url}
+            auth:
+              type: OIDC
+            body:
+              script: ${scriptwriter_result.body.script_uri}
+              gcs_bucket: ${gcs_bucket}
+          result: media_sourcing_result
+        except:
+          as: e
+          steps:
+            - log_error:
+                call: sys.log
+                args:
+                  text: '${"Media sourcing failed: " + json.encode(e)}'
+                  severity: "ERROR"
+            - fail_step:
+                raise: ${e}
+
+    - log_media_sourcing_response:
+        call: sys.log
+        args:
+          text: '${"Media sourcing response: " + json.encode(media_sourcing_result)}'
+          severity: "INFO"
+
+    - call_narrator:
+        try:
+          call: http.post
+          args:
+            url: ${narrator_url}
+            auth:
+              type: OIDC
+            body:
+              script_content: ${scriptwriter_result.body.script_uri}
+              gcs_bucket: ${gcs_bucket}
+              run_id: ${run_id}
+          result: narrator_result
+        except:
+          as: e
+          steps:
+            - log_error:
+                call: sys.log
+                args:
+                  text: '${"Narrator failed: " + json.encode(e)}'
+                  severity: "ERROR"
+            - fail_step:
+                raise: ${e}
+
+    - log_narrator_response:
+        call: sys.log
+        args:
+          text: '${"Narrator response: " + json.encode(narrator_result)}'
+          severity: "INFO"
+
+    - call_video_assembly:
+        try:
+          call: http.post
+          args:
+            url: ${video_assembly_url}
+            auth:
+              type: OIDC
+            body:
+              media_uris: ${media_sourcing_result.body.media_uris}
+              narration_uri: ${narrator_result.body.audio_uri}
+              gcs_bucket: ${gcs_bucket}
+              project_id: ${project}
+              region: ${region}
+          result: video_assembly_result
+        except:
+          as: e
+          steps:
+            - log_error:
+                call: sys.log
+                args:
+                  text: '${"Video assembly failed: " + json.encode(e)}'
+                  severity: "ERROR"
+            - fail_step:
+                raise: ${e}
+
+    - log_video_assembly_response:
+        call: sys.log
+        args:
+          text: '${"Video assembly response: " + json.encode(video_assembly_result)}'
+          severity: "INFO"
+
+    - call_uploader:
+        try:
+          call: http.post
+          args:
+            url: ${uploader_url}
+            auth:
+              type: OIDC
+            body:
+              final_uri: ${video_assembly_result.body.output_uri}
+              script_content: ${scriptwriter_result.body.script_uri}
+              run_id: ${run_id}
+          result: uploader_result
+        except:
+          as: e
+          steps:
+            - log_error:
+                call: sys.log
+                args:
+                  text: '${"Uploader failed: " + json.encode(e)}'
+                  severity: "ERROR"
+            - fail_step:
+                raise: ${e}
+
+    - log_uploader_response:
+        call: sys.log
+        args:
+          text: '${"Uploader response: " + json.encode(uploader_result)}'
+          severity: "INFO"
+
+    - return_output:
+        return: ${uploader_result.body}
+
+handle_error:
+  params: [error, step, error_handler_url, logger_url]
+  steps:
+    - log_error:
+        call: http.post
+        args:
+          url: ${logger_url}
+          auth:
+            type: OIDC
+          body:
+            failed_step: ${step}
+            error_details: ${error}

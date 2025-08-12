@@ -1,0 +1,24 @@
+substitutions:
+  _PROJECT_ID: "carbon-broker-466711-d0"
+  _REGION: "us-central1"
+  _NARRATOR_URL: "https://narrator-url.a.run.app"
+  _ASSEMBLY_URL: "https://video-assembly-url.a.run.app"
+  _UPLOADER_URL: "https://uploader-url.a.run.app"
+
+steps:
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: bash
+  env:
+    - PROJECT_ID=${_PROJECT_ID}
+    - REGION=${_REGION}
+    - ENVIRONMENT=${_ENV_NAME}
+    - TZ=${_TZ}
+    - WORKFLOW_NAME=${_WORKFLOW_NAME}
+    - WF_SA=${_WORKFLOWS_SA}
+    - SCRIPTWRITER_URL=${_SCRIPTWRITER_URL}
+    - MEDIA_URL=${_MEDIA_URL}
+    - NARRATOR_URL=${_NARRATOR_URL}
+    - ASSEMBLY_URL=${_ASSEMBLY_URL}
+    - UPLOADER_URL=${_UPLOADER_URL}
+  args:
+    - './build.sh'
