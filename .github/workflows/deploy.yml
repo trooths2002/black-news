@@ -1,8 +1,8 @@
 name: Deploy to Google Cloud
 
 # This GitHub Actions workflow deploys the Cloud Functions and Workflow
-# whenever code is pushed to the `main` branch.  It uses a service
-# account key stored as a GitHub secret to authenticate with GCP.
+# whenever code is pushed to the `main` branch.  It supports both service
+# account key authentication (GCP_SA_KEY) and Workload Identity Federation.
 
 on:
   push:
@@ -17,16 +17,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 2. Set up the Google Cloud SDK.  The service account key
-      # should be stored in the repository's secrets as GCP_SA_KEY.
-      - name: Set up GCP credentials
+      # 2. Validate required secrets
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.GCP_PROJECT_ID }}" ]; then
+            echo "Error: GCP_PROJECT_ID secret is required but not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GCP_REGION }}" ]; then
+            echo "Error: GCP_REGION secret is required but not set"
+            exit 1
+          fi
+          echo "Required secrets validated successfully"
+
+      # 3. Authenticate with Google Cloud using either service account key or WIF
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          # Use service account key if available, otherwise try WIF
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SA }}
+
+      # 4. Set up Google Cloud SDK
+      - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_SA_KEY }}
-          export_default_credentials: true
 
-      # 3. Install Python dependencies needed for deployment.  This is
+      # 5. Install Python dependencies needed for deployment.  This is
       # optional if your functions include their own dependencies via
       # individual requirements.txt files.
       - name: Install dependencies
@@ -34,62 +54,74 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. Deploy each Cloud Function.  Replace the `--set-env-vars` values
-      # with the appropriate environment variables (e.g. API keys, bucket names).
+      # 6. Deploy each Cloud Function using Gen 2 with explicit project and region.
+      # Environment variables are preserved for media-sourcing function.
       - name: Deploy Cloud Functions
         run: |
           # Deploy the scriptwriter function
           gcloud functions deploy scriptwriter \
+            --gen2 \
             --runtime python311 \
             --trigger-http \
             --entry-point handle \
             --source functions/scriptwriter \
             --region ${{ secrets.GCP_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
             --no-allow-unauthenticated \
             --set-env-vars GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
 
-          # Deploy the media sourcing function
+          # Deploy the media sourcing function with preserved environment variables
           gcloud functions deploy media-sourcing \
+            --gen2 \
             --runtime python311 \
             --trigger-http \
             --entry-point handle \
             --source functions/media_sourcing \
             --region ${{ secrets.GCP_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
             --no-allow-unauthenticated \
             --set-env-vars GCS_BUCKET=${{ secrets.GCS_BUCKET }},PEXELS_API_KEY=${{ secrets.PEXELS_API_KEY }}
 
           # Deploy the narrator function
           gcloud functions deploy narrator \
+            --gen2 \
             --runtime python311 \
             --trigger-http \
             --entry-point handle \
             --source functions/narrator \
             --region ${{ secrets.GCP_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
             --no-allow-unauthenticated
 
           # Deploy the video assembly function
           gcloud functions deploy video-assembly \
+            --gen2 \
             --runtime python311 \
             --trigger-http \
             --entry-point handle \
             --source functions/video_assembly \
             --region ${{ secrets.GCP_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
             --no-allow-unauthenticated
 
           # Deploy the uploader function
           gcloud functions deploy uploader \
+            --gen2 \
             --runtime python311 \
             --trigger-http \
             --entry-point handle \
             --source functions/uploader \
             --region ${{ secrets.GCP_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
             --no-allow-unauthenticated
 
-      # 5. Deploy the workflow.  This step assumes you’ve already
-      # updated `workflow.yaml` with the deployed function URLs.
+      # 7. Deploy the workflow (conditional on WORKFLOW_NAME being set).
+      # This step assumes you've already updated `workflow.yaml` with the deployed function URLs.
       - name: Deploy Workflow
+        if: ${{ secrets.WORKFLOW_NAME != '' }}
         run: |
           gcloud workflows deploy ${{ secrets.WORKFLOW_NAME }} \
             --source workflow.yaml \
             --location ${{ secrets.GCP_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
             --service-account ${{ secrets.WF_SERVICE_ACCOUNT }}
